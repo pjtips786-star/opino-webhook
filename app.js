@@ -28,7 +28,7 @@ initializeApp({
 });
 const db = getDatabase();
 
-// ========== Health Check (for Render) ==========
+// ========== Health Check ==========
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: Date.now() });
 });
@@ -37,13 +37,12 @@ app.get('/', (req, res) => {
     res.status(200).json({ message: 'Opino Webhook Server is running!' });
 });
 
-// ========== Webhook Endpoint (POST) ==========
+// ========== Webhook Endpoint ==========
 app.post('/webhook', async (req, res) => {
     try {
         const signature = req.headers['x-razorpay-signature'];
         const body = JSON.stringify(req.body);
 
-        // Verify signature
         const expectedSignature = crypto
             .createHmac('sha256', WEBHOOK_SECRET)
             .update(body)
@@ -57,7 +56,6 @@ app.post('/webhook', async (req, res) => {
         const event = req.body.event;
         console.log(`✅ Webhook received: ${event}`);
 
-        // Payment captured event – update wallet
         if (event === 'payment.captured') {
             const payment = req.body.payload.payment.entity;
             const userId = payment.notes?.user_id;
@@ -71,23 +69,37 @@ app.post('/webhook', async (req, res) => {
 
             console.log(`💰 Payment: User ${userId}, Amount ₹${amount}, Payment ID ${paymentId}`);
 
-            // Update Firebase Realtime Database
-            // Assumes wallet path: /wallets/{userId}/vDeposit
-            const walletRef = db.ref(`/wallets/${userId}`);
-            const snapshot = await walletRef.once('value');
-
-            let currentDeposit = 0;
-            if (snapshot.exists()) {
-                currentDeposit = snapshot.child('vDeposit').val() || 0;
-            }
-
-            const newDeposit = currentDeposit + amount;
-            await walletRef.update({
-                vDeposit: newDeposit,
-                lastUpdated: Date.now()
+            // ✅ CORRECT PATH: /users/{userId}/wallet/vDeposit
+            const walletRef = db.ref(`/users/${userId}/wallet/vDeposit`);
+            
+            // Transaction to safely increment (handles concurrent updates)
+            await walletRef.transaction(current => {
+                if (current === null) return amount;
+                return current + amount;
+            }, (error, committed, snapshot) => {
+                if (error) {
+                    console.error('❌ Transaction error:', error);
+                } else if (committed) {
+                    console.log(`✅ Wallet updated: ${userId} — vDeposit now ₹${snapshot.val()}`);
+                }
             });
 
-            console.log(`✅ Wallet updated: ${userId} — vDeposit = ₹${newDeposit} (added ₹${amount})`);
+            // Also save transaction record (optional but good for audit)
+            const txnRef = db.ref(`/transactions/${paymentId}`);
+            await txnRef.set({
+                txnId: paymentId,
+                userId: userId,
+                type: 'deposit',
+                amount: amount,
+                fee: 0,
+                netAmount: amount,
+                status: 'success',
+                razorpayId: paymentId,
+                description: 'Wallet Deposit via QR',
+                timestamp: Date.now()
+            });
+
+            console.log(`✅ Transaction record saved for ${paymentId}`);
         }
 
         res.status(200).send('OK');
@@ -98,7 +110,6 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// ========== Start Server ==========
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Opino webhook server running on port ${PORT}`);
