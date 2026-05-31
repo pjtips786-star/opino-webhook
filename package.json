@@ -1,6 +1,7 @@
 {
   "name": "opino-webhook",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "Razorpay webhook for Opino – automatic wallet credit",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
@@ -8,5 +9,8 @@
   "dependencies": {
     "express": "^4.18.2",
     "firebase-admin": "^11.11.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
