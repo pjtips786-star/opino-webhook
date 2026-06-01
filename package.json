@@ -1,7 +1,7 @@
 {
   "name": "opino-webhook",
   "version": "2.0.0",
-  "description": "Razorpay webhook for Opino – automatic wallet credit",
+  "description": "Razorpay webhook for Opino - Handles deposit orders and wallet updates",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
