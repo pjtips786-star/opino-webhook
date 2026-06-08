@@ -96,7 +96,6 @@ app.post('/webhook', async (req, res) => {
                     });
                     console.log(`✅ Deposit order updated: ${orderId} → success`);
                 } else {
-                    // Order doesn't exist, create one (fallback)
                     await orderRef.set({
                         orderId: orderId,
                         userId: userId,
@@ -119,7 +118,7 @@ app.post('/webhook', async (req, res) => {
             await walletRef.set(newBalance);
             console.log(`💰 Wallet updated: ₹${currentBalance} → ₹${newBalance}`);
 
-            // 6. Also update total balance if you have one
+            // 6. Update total balance
             const totalBalanceRef = db.ref(`/users/${userId}/wallet/totalBalance`);
             const totalSnapshot = await totalBalanceRef.once('value');
             const currentTotal = totalSnapshot.val() || 0;
@@ -152,6 +151,10 @@ app.post('/webhook', async (req, res) => {
                 timestamp: Date.now()
             });
             console.log(`✅ Notification sent to user: ${userId}`);
+
+            // ✅ ========== REFERRAL BONUS (NEW) ==========
+            await checkAndGiveReferralBonus(userId, amount);
+
         }
 
         // 9. Handle payment.failed event
@@ -179,6 +182,124 @@ app.post('/webhook', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
+
+// ✅ ========== REFERRAL BONUS FUNCTION ==========
+async function checkAndGiveReferralBonus(userId, depositAmount) {
+    console.log('===== CHECKING REFERRAL BONUS =====');
+    console.log(`User ID: ${userId}`);
+    console.log(`Deposit Amount: ₹${depositAmount}`);
+
+    // Only check if deposit amount is ₹20 or more
+    if (depositAmount < 20) {
+        console.log('❌ Deposit amount less than ₹20, skipping referral bonus');
+        return;
+    }
+
+    console.log('✅ Deposit amount >= ₹20, checking referral status...');
+
+    try {
+        // Get user data
+        const userRef = db.ref(`/users/${userId}`);
+        const userSnapshot = await userRef.once('value');
+        
+        if (!userSnapshot.exists()) {
+            console.log('❌ User not found');
+            return;
+        }
+
+        const referredBy = userSnapshot.child('referredBy').val();
+        const firstDepositDone = userSnapshot.child('firstDepositDone').val() || false;
+        const referralBonusGiven = userSnapshot.child('referralBonusGiven').val() || false;
+
+        console.log(`ReferredBy: ${referredBy}`);
+        console.log(`FirstDepositDone: ${firstDepositDone}`);
+        console.log(`ReferralBonusGiven: ${referralBonusGiven}`);
+
+        // Check conditions
+        if (!referredBy || referredBy === '') {
+            console.log('❌ User not referred by anyone');
+            return;
+        }
+
+        if (referralBonusGiven) {
+            console.log('❌ Referral bonus already given to this user');
+            return;
+        }
+
+        // Get referrer UID from referral code
+        const referralRef = db.ref(`/referrals/${referredBy}`);
+        const referralSnapshot = await referralRef.once('value');
+
+        if (!referralSnapshot.exists()) {
+            console.log(`❌ Referral code not found: ${referredBy}`);
+            return;
+        }
+
+        const referrerUid = referralSnapshot.child('ownerUid').val();
+        console.log(`Referrer UID: ${referrerUid}`);
+
+        if (!referrerUid) {
+            console.log('❌ ownerUid not found');
+            return;
+        }
+
+        // Give ₹25 bonus to referrer
+        const referrerWalletRef = db.ref(`/users/${referrerUid}/wallet/vBonus`);
+        const currentBonus = (await referrerWalletRef.once('value')).val() || 0;
+        const newBonus = currentBonus + 25;
+
+        await referrerWalletRef.set(newBonus);
+        console.log(`✅ Added ₹25 to referrer's bonus wallet: ${currentBonus} → ${newBonus}`);
+
+        // Update referral stats
+        const totalEarned = referralSnapshot.child('totalEarned').val() || 0;
+        const totalUsed = referralSnapshot.child('totalUsed').val() || 0;
+
+        await referralRef.update({
+            totalEarned: totalEarned + 25,
+            totalUsed: totalUsed + 1
+        });
+
+        // Mark that bonus has been given to this user
+        await userRef.update({
+            firstDepositDone: true,
+            referralBonusGiven: true
+        });
+
+        // Save transaction record for referrer
+        const txnId = 'REF_' + Date.now();
+        await db.ref(`/transactions/${txnId}`).set({
+            txnId: txnId,
+            userId: referrerUid,
+            amount: 25,
+            type: 'referral',
+            status: 'success',
+            description: 'Referral bonus - referred user made first deposit of ₹20+',
+            timestamp: Date.now()
+        });
+
+        // Send notification to referrer
+        const notifRef = db.ref(`/notifications/${referrerUid}`).push();
+        await notifRef.set({
+            notifId: notifRef.key,
+            title: '🎉 Referral Bonus Earned!',
+            message: `₹25 added to your bonus wallet. Your friend made their first deposit of ₹${depositAmount}!`,
+            type: 'referral',
+            isRead: false,
+            timestamp: Date.now()
+        });
+
+        console.log(`✅✅✅ Referral bonus ₹25 given to ${referrerUid} successfully! ✅✅✅`);
+
+        // Also mark firstDepositDone for user if not already
+        if (!firstDepositDone) {
+            await userRef.update({ firstDepositDone: true });
+        }
+
+    } catch (error) {
+        console.error('❌ Error in referral bonus:', error);
+    }
+}
 
 // ========== Start Server ==========
 const PORT = process.env.PORT || 3000;
